@@ -2,7 +2,7 @@
 
 ![Average latency: TCP=0.226ms Unix_socket=0.170ms Shared_memory=0.013ms](docs/latency_barchart.png)
 
-When your client is on the **same host as redis server**, you can get much better latency than going through the TCP stack. And surely you want the **best latency you can get**. Redis folk know this - that's why unix socket support exists. But you can do a lot better with shared memory! See the benchmark at [#Performance](#Performance) section below.
+When your client is on the **same host as redis server**, you can get much better latency than going through the TCP stack. And surely you want the **best latency you can get**. Redis folk know this - that's why unix socket support exists. But you can do a lot better with shared memory! See the benchmark at [#Performance](#performance) section below.
 
 # Summary and usage
 
@@ -42,7 +42,7 @@ The TCP or Unix socket connection is still necessary. It is used to exchange the
 ### Performance
 
 Well, the barchart above pretty much describes it. There are a few things to take attention for though:
-* Your latency sensitive redis server and client need to run with high CPU scheduler priority. See section [#How does it work?](#How does it work?) for the explanation why it's needed.
+* Your latency sensitive redis server and client need to run with high CPU scheduler priority. See section [#How does it work?](#how-does-it-work) for the explanation why it's needed.
 * I made the test on a practically idle host. When the host is under load (`stress --cpu 50`), the latency of TCP and unix socket communication decreases... Yeah, I know. Under load, unix socket ping latency drops to 0.052ms. Several times higher than shared memory but an impressive drop nonetheless. But why it happens, I don't know. CPU power saving? Other folk have noticed this phenomena too and are [guessing it may be a scheduler thing](http://stackoverflow.com/questions/33950984/how-to-understand-redis-clis-result-vs-redis-benchmarks-result).
 
 This is how the benchmark for the barchart is done:
