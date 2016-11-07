@@ -2,7 +2,7 @@
 
 ![Average latency: TCP=0.226ms Unix_socket=0.170ms Shared_memory=0.013ms](docs/latency_barchart.png)
 
-When your client is on the **same host as redis server**, you can get much better latency than going through the TCP stack. And surely you want the **best latency you can get**. Redis folk know this - that's why unix socket support exists. But you can do a lot better with shared memory! See the benchmark at [#Performance](#performance) section below.
+When your client is on the **same host as redis server**, you can get much better latency than going through the TCP stack. And surely you want the **best latency you can get**. Redis folk know this - that's why unix socket support exists. But you can do a lot better with shared memory! See the more at [#Performance](#performance) section below.
 
 # Summary and usage
 
@@ -19,12 +19,12 @@ Redis module for shared memory client-server communication.
 
 Server side: `redis-server --loadmodule module-shm.so`
 
-Client side: It's all the same [hiredis](https://github.com/redis/hiredis) you're used to using. Latency has its tradeoffs - to achieve maximum latency, a single thread is working at 100% load, actively reading for changes in memory. So, you must first understand this, and confirm latency is important for you, by calling: `asdfasdf`
+Client side: It's all the same [hiredis](https://github.com/redis/hiredis) you're used to using. Latency has its tradeoffs - to achieve maximum latency, a single thread is working at 100% load, actively reading for changes in memory. So, you must first understand this (see more at [#Performance](#performance) section below), and confirm latency is important for you, by calling: `asdfasdf`
 TODO
 
 ### How does it work?
 
-This code all relies on Linux, GCC and x86. I'm not even trying to investigate other platforms or compilers, as each is like a unicorn in this field - amazingly unique, complex, entwined in mysterious behaviours. Linux & GCC & x86 is the most popular combo.
+This code all relies on Linux, GCC and x86. I'm not even trying to investigate other platforms or compilers, as each is like a unicorn in this field - amazingly unique, complex, sometimes entwined in mysterious behaviours. Linux & GCC & x86 is the most popular combo.
 * Linux shared memory - makes the communication possible. There are 2 FIFOs - one for each direction of communication. They are circular buffers of chars, nothing more.
 * GCC atomics - allows avoiding relatively heavy synchronization mechanisms. Forcing the compiler and CPU do things in order with [memory barriers](https://gcc.gnu.org/onlinedocs/gcc-4.4.0/gcc/Atomic-Builtins.html), and using TODO to avoid partial memory write/read nastiness.
 * GCC volatile - avoids optimization dropping "unneeded" reads/writes. GCC sanely assumes no outsider is able to modify the memory the code accesses, but the shared memory does exactly that. Using `volatile` drops the GCC assumption.
@@ -32,12 +32,12 @@ This code all relies on Linux, GCC and x86. I'm not even trying to investigate o
 
 Whenever a TCP or socket read()/write() would be called, a pop/push on the circular buffer is done instead.
 
-A single dedicated thread on redis-server is actively reading the shared memory, waiting for input, or waiting for the buffer to free up. It never sleeps, and uses 100% of the CPU core, whenever at least one client is connected. Similarily, the redis client uses 100% of its CPU core during any redis API call. It's a chosen tradeof to avoid communicating through kernel, thus keeping latency extremely low. There is a gotcha though. When CPU load is high, the CPU scheduler gives bursts of CPU time, causing high latency during downtimes. As load gets higher, the duration and time between (=latency) the bursts gets higher. To avoid this latency, redis-server and client should be run with higher priority than other processes. Note that the same problem does not affect TCP or unix socket communication when redis requests have relatively large gaps between them. When a request occurs, the "waiting for sockets" redis server (and client, if it was also sleeping) is woken up almost immediately because it hasn't used up any recent CPU time yet. I may implement configurable alternatives later...
+A single dedicated thread on redis-server is actively reading the shared memory, waiting for input, or waiting for the buffer to free up. It never sleeps, and uses 100% of the CPU core, whenever at least one client is connected. Similarily, the redis client uses 100% of its CPU core during any redis API call. It's a chosen tradeof to avoid communicating through kernel, thus keeping latency extremely low. There is a gotcha though. When CPU load is high, the CPU scheduler gives bursts of CPU time, causing high latency during downtimes. As load gets higher, the duration and time between (=latency) the bursts gets higher. To avoid this latency, redis-server and client should be run with higher priority than other processes. Note that the same problem does not affect TCP or unix socket communication [iff](https://en.wikipedia.org/wiki/If_and_only_if) redis requests are made with relatively large gaps between them. When a request occurs, the "waiting for sockets" redis server (and client, if it was also sleeping) is woken up almost immediately because it hasn't used up any recent CPU time yet. I may implement configurable alternatives later...
 
 Now, the nasty part...
 TODO
 
-The TCP or Unix socket connection is still necessary. It is used to exchange the info about the shared memory. When a new shared memory connection is established, a `SHM.OPEN` redis module command is sent through the socket. No more information is exchanged through the socket after that, until the connection needs to be broken down.
+The TCP or Unix socket connection is still necessary. It is used to exchange the info about the shared memory. When a new shared memory connection is established, a `SHM.OPEN` redis module command is used to send the shared memory file name through the socket. No more information is exchanged through the socket after that, until the connection needs to be broken down.
 
 ### Performance
 
