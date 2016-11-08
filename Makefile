@@ -20,21 +20,19 @@ else
 	SHOBJ_LDFLAGS ?= -bundle -undefined dynamic_lookup
 endif
 CFLAGS = -I$(RM_INCLUDE_DIR) -I$(REDIS_INCLUDE_DIR) -g -fPIC -O3 -std=gnu99 -Wall
-#LDFLAGS = -g -lrt
 CC=gcc
-.SUFFIXES: .c .so .o
 
 MODULE = module-shm
 
 SRC = \
 	module-shm.c \
 	lockless-char-fifo/charfifo.c
-OBJS    = $(SRC:.c=.o)
+OBJS = $(SRC:.c=.o)
 
 all: $(MODULE)
 
-$(MODULE): $(OBJS) $(SRC)
-	$(LD) -o $@.so $< $(SHOBJ_LDFLAGS) $(LIBS) -lrt
+$(MODULE): $(OBJS)
+	$(LD) -o $@.so $^ $(SHOBJ_LDFLAGS) $(LIBS) -g -lrt
 
 clean:
 	rm -rf *.so *.o */*.o
