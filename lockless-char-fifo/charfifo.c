@@ -8,6 +8,7 @@
 
 #include "charfifo.h"
 
+#include <sys/types.h>
 #include <string.h>
 
 
