@@ -26,10 +26,15 @@ CC=gcc
 
 MODULE = module-shm
 
+SRC = \
+	module-shm.c \
+	lockless-char-fifo/charfifo.c
+OBJS    = $(SRC:.c=.o)
+
 all: $(MODULE)
 
-$(MODULE): %: %.o
+$(MODULE): $(OBJS) $(SRC)
 	$(LD) -o $@.so $< $(SHOBJ_LDFLAGS) $(LIBS) -lrt
 
 clean:
-	rm -rf *.so *.o
+	rm -rf *.so *.o */*.o
