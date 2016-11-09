@@ -19,7 +19,12 @@
 #include <unistd.h>
 #include <errno.h>
 
+
+/* Choose?: pthread.h vs threads.h
+ * threads.h has nicer API but GCC hasn't yet implemented it. */ 
 #include <pthread.h>
+#include <c11threads.h>
+
 
 #include "lockless-char-fifo/charfifo.h"
 
@@ -49,89 +54,29 @@ static pthread_t main_thread;
 static int thread_signalled = 0;
 static list *threads;
 
-/*TODO: sharedMemory buffer split out and symlinked between projects */
+/* Only let shared memory thread process requests while the main Redis thread
+ * is sleeping, and only let the maim Redis thread process process requests
+ * when the shared memory thread is waiting. */ 
+static mtx_t processing_requests;
 
-/*inline void
-clflush(volatile void *p)
+extern void (*ModuleSHM_BeforeSelect)();
+void ModuleSHM_BeforeSelect_Impl()
 {
-    asm volatile ("clflush (%0)" :: "r"(p));
-}*/
+    mtx_unlock(&processing_requests);
+}
 
-//static size_t bufFreeSpace(sharedMemoryBuffer *target) {
-//    size_t read_idx = target->read_idx;
-//    ssize_t free = (ssize_t)read_idx - target->write_idx - 1;
-//    if (read_idx <= target->write_idx) {
-//        free = free + sizeof(target->buf);
-//    }
-//    return free;
-//}
-//
-//static void bufWrite(sharedMemoryBuffer *target, char *buf, size_t btw) {
-//    X("%lld bufWrite(read_ptr=%d write_ptr=%d btw=%d\n", ustime(), target->read_idx, target->write_idx, btw);
-//    size_t write_idx = target->write_idx;
-//    __sync_synchronize();
-//    char* target_buf = (char*)target->buf; /* casting away volatile because buf can't change in the range being used. */
-//    if (write_idx >= target->read_idx) {
-//        size_t bytes_to_eob = sizeof(target->buf) - write_idx;
-//        if (bytes_to_eob <= btw) {
-//            /* Write needs to rotate target->write_idx to the buffer beginning */
-//            memcpy(target_buf + write_idx, buf, bytes_to_eob);
-//            write_idx = 0;
-//            btw -= bytes_to_eob;
-//            buf += bytes_to_eob;
-//        }
-//    }
-//    memcpy(target_buf + write_idx, buf, btw);
-//    write_idx += btw;
-//    __sync_synchronize();
-//    target->write_idx = write_idx;
-//    /* Need to push out of L1 cache, for other CPUs to see the update now,
-//     * but the CPU seems to do a good enough job of that. There is no way to
-//     * push out to L2, only purge of all cache hierarchy, which is slow. */
-////    asm volatile ("mfence" ::: "memory");
-////    clflush(&target->write_idx);
-//    X("%lld bufWrite fin (read_ptr=%d write_ptr=%d btw=%d\n", ustime(), target->read_idx, target->write_idx, btw);
-//}
-//
-///* TODO: Less duplication, maybe? */
-//static size_t bufUsedSpace(sharedMemoryBuffer *source) {
-//    size_t write_idx = source->write_idx;
-//    ssize_t used = write_idx - source->read_idx;
-//    if (write_idx < source->read_idx) {
-//        used = used + sizeof(source->buf);
-//    }
-//    return used;
-//}
-//
-///* TODO: Less duplication, maybe? */
-//static void bufRead(sharedMemoryBuffer *source, char *buf, size_t btr) {
-//    X("%lld bufRead(read_ptr=%d write_ptr=%d btr=%d\n", ustime(), source->read_idx, source->write_idx, btr);
-//    size_t read_idx = source->read_idx;
-//    __sync_synchronize();
-//    char* source_buf = (char*)source->buf; /* casting away volatile because buf can't change in the range being used. */
-//    if (read_idx > source->write_idx) {
-//        size_t bytes_to_eob = sizeof(source->buf) - read_idx;
-//        if (bytes_to_eob <= btr) {
-//            /* Read needs to rotate source->read_idx to the buffer beginning */
-//            memcpy(buf, source_buf + read_idx, bytes_to_eob);
-//            read_idx = 0;
-//            btr -= bytes_to_eob;
-//            buf += bytes_to_eob;
-//        }
-//    }
-//    memcpy(buf, source_buf + read_idx, btr);
-//    read_idx += btr;
-//    __sync_synchronize();
-//    source->read_idx = read_idx;
-//    /* Need to push out of L1 cache, for other CPUs to see the update now. */
-////    asm volatile ("mfence" ::: "memory");
-////    clflush(&source->read_idx);
-//    X("%lld bufRead fin (read_ptr=%d write_ptr=%d btr=%d\n", ustime(), source->read_idx, source->write_idx, btr);
-//}
+extern void (*ModuleSHM_AfterSelect)();
+void ModuleSHM_AfterSelect_Impl()
+{
+    /* Block until shared memory processing finishes work. It's negligible because
+     * the main thread just called a slow syscall anyway. */
+    mtx_lock(&processing_requests);
+}
 
 static void ProcessPendingInput();
 
 /*TODO: Search "pthread_" to see how redis handles threading, restrictions and such. */
+/*TODO: Try this: http://lxr.free-electrons.com/source/include/linux/hw_breakpoint.h */
 static void* RunThread(void* arg)
 {
     threadCtx *thread_ctx = arg;
@@ -142,23 +87,15 @@ static void* RunThread(void* arg)
         }
         size_t btr = CharFifo_UsedSpace(&thread_ctx->mem->to_server);
         if (btr > 0) {
-            /* Can't process now because of data races. Sending a signal is not
-             * beautiful and probably isn't ultra fast, depending on the kernel.
-             * But I'd be pretty surprised if a pipe is faster. All of this 
-             * shared memory magic is done to avoid using pipes...
-             * There is no good solution unless the redis server code is changed.
-             */
-//            X("%lld alarm \n", ustime());
-//            thread_signalled = 1;
-            //pthread_kill(main_thread, SIGUSR2);
-            
-            //TODO: signalling is too slow. Need to override the whole redis main loop.
-            // After the 'select', a mutex.
+            /* Spinning because avoids slow context switching. */
+            while (mtx_trylock(&processing_requests) != thrd_success) {};
             
             // Doing the pending input directly here, while testing, because
             // there's just one connection.
             X("%lld processing \n", ustime());
             ProcessPendingInput();
+            
+            mtx_unlock(&processing_requests);
         }
     }
     /*TODO: unsafe to do any of this stuff here. need to set a flag and delete in ProcessPendingInput */
@@ -413,7 +350,12 @@ int RedisModule_OnLoad (RedisModuleCtx *ctx)
         return REDISMODULE_ERR;
     }
     
-    RedisModule_Log(ctx, "warning", "!!!!!!!!!!  Shared memory module is very, very dangerous!  !!!!!!!!!!"); 
+    RedisModule_Log(ctx, "warning", "!!!!!!!!!!  Shared memory module is very, very dangerous!  !!!!!!!!!!");
+    
+    ModuleSHM_BeforeSelect = ModuleSHM_BeforeSelect_Impl;
+    ModuleSHM_AfterSelect = ModuleSHM_AfterSelect_Impl;
+    mtx_init(&processing_requests, mtx_plain);
+    mtx_lock(&processing_requests);
     
     /* https://github.com/RedisLabs/RedisModulesSDK/blob/master/FUNCTIONS.md */
     const char *flags = "readonly random deny-oom no-monitor fast"; /* TODO: allow-loading, and look into the used flags in detail */

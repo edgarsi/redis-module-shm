@@ -19,20 +19,27 @@ else
 	SHOBJ_CFLAGS ?= -dynamic -fno-common -g -ggdb
 	SHOBJ_LDFLAGS ?= -bundle -undefined dynamic_lookup
 endif
-CFLAGS = -I$(RM_INCLUDE_DIR) -I$(REDIS_INCLUDE_DIR) -g -fPIC -O3 -std=gnu99 -Wall
+CFLAGS = -I$(RM_INCLUDE_DIR) -I$(REDIS_INCLUDE_DIR) -g -fPIC -O3 -std=gnu11 -Wall -D_GNU_SOURCE
 CC=gcc
 
 MODULE = module-shm
-
-SRC = \
+MODULE_SRC = \
 	module-shm.c \
 	lockless-char-fifo/charfifo.c
-OBJS = $(SRC:.c=.o)
+MODULE_OBJS = $(MODULE_SRC:.c=.o)
 
-all: $(MODULE)
+PRELOAD = module-shm-preload
+PRELOAD_SRC = \
+	module-shm-preload.c
+PRELOAD_OBJS = $(PRELOAD_SRC:.c=.o)
 
-$(MODULE): $(OBJS)
+all: $(MODULE) $(PRELOAD)
+
+$(MODULE): $(MODULE_OBJS)
 	$(LD) -o $@.so $^ $(SHOBJ_LDFLAGS) $(LIBS) -g -lrt
+
+$(PRELOAD): $(PRELOAD_OBJS)
+	$(LD) -o $@.so $^ $(SHOBJ_LDFLAGS) $(LIBS) -g -lrt -ldl
 
 clean:
 	rm -rf *.so *.o */*.o
