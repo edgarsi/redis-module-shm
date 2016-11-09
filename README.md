@@ -2,7 +2,7 @@
 
 ![Average latency: TCP=0.226ms Unix_socket=0.170ms Shared_memory=0.013ms](docs/latency_barchart.png)
 
-When your client is on the **same host as redis server**, you can get much better latency than going through the TCP stack. And surely you want the **best latency you can get**. Redis folk know this - that's why unix socket support exists. But you can do a lot better with shared memory! See the more at [#Performance](#performance) section below.
+When your client is on the **same host as redis server**, you can get much better latency than going through the TCP stack. And surely you want the **best latency you can get**. Redis folk know this - that's why unix socket support exists. But you can do a lot better with shared memory! There is a cost though. See the more at [#Performance](#performance) section below.
 
 # Summary and usage
 
@@ -26,7 +26,7 @@ TODO
 
 This code all relies on Linux, GCC and x86. I'm not even trying to investigate other platforms or compilers, as each is like a unicorn in this field - amazingly unique, complex, sometimes entwined in mysterious behaviours. Linux & GCC & x86 is the most popular combo.
 * Linux shared memory - makes the communication possible. There are 2 FIFOs - one for each direction of communication. They are circular buffers of chars, nothing more.
-* GCC atomics - allows avoiding relatively heavy synchronization mechanisms. Forcing the compiler and CPU do things in order with [memory barriers](https://gcc.gnu.org/onlinedocs/gcc-4.4.0/gcc/Atomic-Builtins.html), and using TODO to avoid partial memory write/read nastiness.
+* GCC atomics - allows avoiding relatively heavy synchronization mechanisms. Forcing the compiler and CPU do things in order with [memory barriers](https://gcc.gnu.org/onlinedocs/gcc-4.4.0/gcc/Atomic-Builtins.html), and using [stdatomic](http://en.cppreference.com/w/c/atomic) to avoid partial memory write/read nastiness.
 * GCC volatile - avoids optimization dropping "unneeded" reads/writes. GCC sanely assumes no outsider is able to modify the memory the code accesses, but the shared memory does exactly that. Using `volatile` drops the GCC assumption.
 * ~~mfence/clflush - avoids waiting for shared memory writes to move out of L1. (An alernative could be a [userspace DMA](https://github.com/ikwzm/udmabuf)?)~~ <- Nah, the default behaviour seems good enough and even slightly faster than clflush. Data moves out of L1 quickly. Calling clflush however forces data to be moved up to the main memory, a slow and often unnecessary task. 
 
