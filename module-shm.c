@@ -44,7 +44,7 @@ typedef volatile struct sharedMemory {
 } sharedMemory;
 
 typedef struct shmConnCtx {
-    RedisModuleCtx *module_ctx;
+    int fd;
     sharedMemory *mem;
     client *client;
 } shmConnCtx;
@@ -215,12 +215,24 @@ static inline void mtx_lock_spinning(mtx_t *m)
     while (mtx_trylock(m) != thrd_success) {};
 }
 
+static inline int module_client_fd(RedisModuleCtx *module)
+{
+    /* I need to get to the module client fd some way :( */
+    typedef struct RedisModuleCtx {
+        void *getapifuncptr;            /* NOTE: Must be the first field. */
+        struct RedisModule *module;     /* Module reference. */
+        client *client;                 /* Client calling a command. */
+    } RedisModuleCtx;
+    return ((RedisModuleCtx*)module)->client->fd;
+}
+
 /*TODO: Search "pthread_" to see how redis handles threading, restrictions and such. */
 /*TODO: Try this: http://lxr.free-electrons.com/source/include/linux/hw_breakpoint.h */
 static void* RunThread(void* dummy __attribute__((unused)))
 {
     /*TODO: Test replication */
     for (;;) {
+        mtx_lock_spinning(&processing_requests);
         mtx_lock_spinning(&accessing_connections);
         
         /* Check each connection for incoming data. */
@@ -228,43 +240,44 @@ static void* RunThread(void* dummy __attribute__((unused)))
         while (it != NULL) {
             shmConnCtx *conn_ctx = listNodeValue(it);
             
+            /* ...and process them. */
             if (ReadInput(conn_ctx)) {
-                /* ...and process them. */
                 X("%lld processing \n", ustime());
-                mtx_lock_spinning(&processing_requests);
                 processInputBuffer(conn_ctx->client);
                 WriteOutput(conn_ctx);
-                mtx_unlock(&processing_requests);
                 X("%lld fin processing client connection \n", ustime());
             }
             
-            it = listNextNode(it);
+            listNode *next_it = listNextNode(it);
+            
+            /* Let's break down the connections when the socket closes */
+            int error = 0;
+            socklen_t len = sizeof(error);
+            int retval = getsockopt(conn_ctx->fd, SOL_SOCKET, SO_ERROR, &error, &len);
+            if (retval != 0 || error != 0) {
+                X("%lld closing socket fd=%d retval=%d error=%d\n", ustime(), conn_ctx->fd, retval, error);
+                freeClient(conn_ctx->client); /*TODO: err*/
+                RedisModule_Free(conn_ctx); /*TODO: err*/
+                listDelNode(connections, it);
+            }
+            
+            it = next_it;
         }
         
+        
+        /* No need to waste CPU when no shared memory connection established. */
         if (listLength(connections) == 0) {
-            /* No need to waste CPU when no shared memory 
-             * connection established. */
             break;
         }
         
         mtx_unlock(&accessing_connections);
+        mtx_unlock(&processing_requests);
     }
     mtx_unlock(&accessing_connections);
+    mtx_unlock(&processing_requests);
     
     return NULL;
 }
-
-
-//mtx_lock_spinning(&processing_requests);
-//RedisModule_Free(conn_ctx); /*TODO: err*/
-//freeClient(thread_ctx->client); /*TODO: err*/
-//mtx_unlock(&processing_requests);
-//mtx_lock_spinning(&accessing_connections);
-//listDelNode(threads, listSearchKey(threads, thread_ctx)); /*TODO: err*/
-//mtx_unlock(&accessing_connections);
-
-
-
 
 /* Does the server end of establishing the shared memory connection. */
 static int Command_Open(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
@@ -310,22 +323,25 @@ static int Command_Open(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
     c->flags |= CLIENT_MODULE;
     
     shmConnCtx *conn_ctx = RedisModule_Alloc(sizeof(shmConnCtx));
-    conn_ctx->module_ctx = ctx;
+    conn_ctx->fd = module_client_fd(ctx);
     conn_ctx->mem = mem;
     conn_ctx->client = c;
     
-    mtx_lock_spinning(&accessing_connections);
+    mtx_lock(&accessing_connections);
+    
     listAddNodeHead(connections, conn_ctx); /*TODO: err*/
-    mtx_unlock(&accessing_connections);
     
     if (listLength(connections) == 1) {
         printf("%lld creating thread \n", ustime());
         int err = pthread_create(&thread, NULL, RunThread, NULL);
         if (err != 0) {
+            mtx_unlock(&accessing_connections);
             return RedisModule_ReplyWithError(ctx, "Can't create a thread to listen "
                                                    "to the changes in shared memory."); /*TODO: err*/
         }
     }
+    
+    mtx_unlock(&accessing_connections);
     
     return RedisModule_ReplyWithLongLong(ctx, 1);
 }
