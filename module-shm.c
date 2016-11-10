@@ -43,21 +43,22 @@ typedef volatile struct sharedMemory {
     sharedMemoryBuffer to_client;
 } sharedMemory;
 
-typedef struct threadCtx {
+typedef struct shmConnCtx {
     RedisModuleCtx *module_ctx;
     sharedMemory *mem;
     client *client;
-    pthread_t thread;
-} threadCtx;
+} shmConnCtx;
 
-static pthread_t main_thread;
-static int thread_signalled = 0;
-static list *threads;
+static list *connections;
+static mtx_t accessing_connections;
+
+static pthread_t thread;
 
 /* Only let shared memory thread process requests while the main Redis thread
- * is sleeping, and only let the maim Redis thread process process requests
+ * is sleeping, and only let the main Redis thread process process requests
  * when the shared memory thread is waiting. */ 
 static mtx_t processing_requests;
+
 
 extern void (*ModuleSHM_BeforeSelect)();
 void ModuleSHM_BeforeSelect_Impl()
@@ -73,46 +74,12 @@ void ModuleSHM_AfterSelect_Impl()
     mtx_lock(&processing_requests);
 }
 
-static void ProcessPendingInput();
-
-/*TODO: Search "pthread_" to see how redis handles threading, restrictions and such. */
-/*TODO: Try this: http://lxr.free-electrons.com/source/include/linux/hw_breakpoint.h */
-static void* RunThread(void* arg)
-{
-    threadCtx *thread_ctx = arg;
-    /*TODO: Test replication */
-    for (;;) { /*TODO: Needs to exit when the context closes */
-        if (thread_signalled) {
-            continue;
-        }
-        size_t btr = CharFifo_UsedSpace(&thread_ctx->mem->to_server);
-        if (btr > 0) {
-            /* Spinning because avoids slow context switching. */
-            while (mtx_trylock(&processing_requests) != thrd_success) {};
-            
-            // Doing the pending input directly here, while testing, because
-            // there's just one connection.
-            X("%lld processing \n", ustime());
-            ProcessPendingInput();
-            
-            mtx_unlock(&processing_requests);
-        }
-    }
-    /*TODO: unsafe to do any of this stuff here. need to set a flag and delete in ProcessPendingInput */
-    /*TODO: Can I really call these in parallel to main thread?*/
-    freeClient(thread_ctx->client); /*TODO: err*/
-    RedisModule_Free(thread_ctx); /*TODO: err*/
-    listDelNode(threads, listSearchKey(threads, thread_ctx)); /*TODO: err*/ 
-    
-    return NULL;
-}
-
 /* Read the input from shared memory into redis client input buffer. 
  * Returns the number of bytes moved. */
 /* Most of the code is just lifted from redis networking.c */
-static size_t ReadInput(threadCtx *thread_ctx)
+static size_t ReadInput(shmConnCtx *conn_ctx)
 {
-    size_t btr = CharFifo_UsedSpace(&thread_ctx->mem->to_server);
+    size_t btr = CharFifo_UsedSpace(&conn_ctx->mem->to_server);
     if (btr == 0) {
         return 0;
     }
@@ -121,15 +88,14 @@ static size_t ReadInput(threadCtx *thread_ctx)
         btr = 1024;
     }
     char tmp[1024]; /*TODO: Read directly into sds */
-    CharFifo_Read(&thread_ctx->mem->to_server, tmp, btr);
+    CharFifo_Read(&conn_ctx->mem->to_server, tmp, btr);
     tmp[btr] = '\0';
 //            RedisModule_Log(thread_ctx->redis_ctx, "warning", "%s", tmp);
     X("%s", tmp);
     
     //TODO: Other stuff from readQueryFromClient, I'm blatantly ignoring here.
     //TODO: Split readQueryFromClient in parts, to avoid duplication.
-    //TODO: Am I really safe modifying client structure in parallel to the main thread?
-    client *c = thread_ctx->client;
+    client *c = conn_ctx->client;
     int readlen = btr;
     size_t qblen = sdslen(c->querybuf);
     if (c->querybuf_peak < qblen) c->querybuf_peak = qblen;
@@ -147,14 +113,14 @@ static size_t ReadInput(threadCtx *thread_ctx)
 
 /* Write the output redis client output buffer to shared memory. */
 /* Most of the code is just lifted from redis networking.c */
-static void WriteOutput(threadCtx *thread_ctx)
+static void WriteOutput(shmConnCtx *conn_ctx)
 {
     ssize_t nwritten = 0, totwritten = 0;
     size_t objlen;
     sds o;
     
-    sharedMemoryBuffer *target = &thread_ctx->mem->to_client;
-    client *c = thread_ctx->client;
+    sharedMemoryBuffer *target = &conn_ctx->mem->to_client;
+    client *c = conn_ctx->client;
 
     while(clientHasPendingReplies(c)) {
         if (c->bufpos > 0) {
@@ -242,36 +208,63 @@ static void WriteOutput(threadCtx *thread_ctx)
     X("%lld replied bytes=%d\n", ustime(), totwritten);
 }
 
-static void ProcessPendingInput()
+
+/* Spinning because avoids slow context switching. */
+static inline void mtx_lock_spinning(mtx_t *m)
 {
-    X("blah %lld \n", ustime());
-    listNode* it = listFirst(threads);
-    while (it != NULL) {
-        threadCtx *thread_ctx = listNodeValue(it);
+    while (mtx_trylock(m) != thrd_success) {};
+}
+
+/*TODO: Search "pthread_" to see how redis handles threading, restrictions and such. */
+/*TODO: Try this: http://lxr.free-electrons.com/source/include/linux/hw_breakpoint.h */
+static void* RunThread(void* dummy __attribute__((unused)))
+{
+    /*TODO: Test replication */
+    for (;;) {
+        mtx_lock_spinning(&accessing_connections);
         
-        if (ReadInput(thread_ctx)) {
-            processInputBuffer(thread_ctx->client);
-            WriteOutput(thread_ctx);
-            X("%lld fin processing thread \n", ustime());
+        /* Check each connection for incoming data. */
+        listNode* it = listFirst(connections);
+        while (it != NULL) {
+            shmConnCtx *conn_ctx = listNodeValue(it);
+            
+            if (ReadInput(conn_ctx)) {
+                /* ...and process them. */
+                X("%lld processing \n", ustime());
+                mtx_lock_spinning(&processing_requests);
+                processInputBuffer(conn_ctx->client);
+                WriteOutput(conn_ctx);
+                mtx_unlock(&processing_requests);
+                X("%lld fin processing client connection \n", ustime());
+            }
+            
+            it = listNextNode(it);
         }
         
-        it = listNextNode(it);
+        if (listLength(connections) == 0) {
+            /* No need to waste CPU when no shared memory 
+             * connection established. */
+            break;
+        }
+        
+        mtx_unlock(&accessing_connections);
     }
-    thread_signalled = 0; /*TODO: explain*/
-}
-
-static int old_beforeSleep_set = 0;
-static aeBeforeSleepProc* old_beforeSleep;
-
-static void BeforeSleep_PlusShm(struct aeEventLoop *eventLoop)
-{
-    /* Latency is king. Housekeeping must wait. */
-    ProcessPendingInput();
+    mtx_unlock(&accessing_connections);
     
-    if (old_beforeSleep) {
-        old_beforeSleep(eventLoop); /* server.c beforeSleep, and maybe other modules misbehave as well. */
-    }
+    return NULL;
 }
+
+
+//mtx_lock_spinning(&processing_requests);
+//RedisModule_Free(conn_ctx); /*TODO: err*/
+//freeClient(thread_ctx->client); /*TODO: err*/
+//mtx_unlock(&processing_requests);
+//mtx_lock_spinning(&accessing_connections);
+//listDelNode(threads, listSearchKey(threads, thread_ctx)); /*TODO: err*/
+//mtx_unlock(&accessing_connections);
+
+
+
 
 /* Does the server end of establishing the shared memory connection. */
 static int Command_Open(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
@@ -316,28 +309,22 @@ static int Command_Open(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
     client *c = createClient(-1);
     c->flags |= CLIENT_MODULE;
     
-    /* Set up a call processing mechanism. To avoid data races with the main thread,
-     * we get the main thread to do the processing at a good time.
-     */
-//    if (!old_beforeSleep_set) { /* Still NULL at RedisModule_OnLoad */
-//        old_beforeSleep = server.el->beforesleep;
-//        aeSetBeforeSleepProc(server.el, BeforeSleep_PlusShm);
-//        old_beforeSleep_set = 1;
-//    }
+    shmConnCtx *conn_ctx = RedisModule_Alloc(sizeof(shmConnCtx));
+    conn_ctx->module_ctx = ctx;
+    conn_ctx->mem = mem;
+    conn_ctx->client = c;
     
-    threadCtx *thread_ctx = RedisModule_Alloc(sizeof(threadCtx));
-    thread_ctx->module_ctx = ctx;
-    thread_ctx->mem = mem;
-    thread_ctx->client = c;
+    mtx_lock_spinning(&accessing_connections);
+    listAddNodeHead(connections, conn_ctx); /*TODO: err*/
+    mtx_unlock(&accessing_connections);
     
-    listAddNodeHead(threads, thread_ctx); /*TODO: err*/
-    
-    printf("%lld creating thread \n", ustime());
-    int err = pthread_create(&thread_ctx->thread, NULL, RunThread, thread_ctx);
-    if (err != 0) {
-        RedisModule_Free(thread_ctx);
-        return RedisModule_ReplyWithError(ctx, "Can't create a thread to listen "
-                                               "to the changes in shared memory."); /*TODO: err*/
+    if (listLength(connections) == 1) {
+        printf("%lld creating thread \n", ustime());
+        int err = pthread_create(&thread, NULL, RunThread, NULL);
+        if (err != 0) {
+            return RedisModule_ReplyWithError(ctx, "Can't create a thread to listen "
+                                                   "to the changes in shared memory."); /*TODO: err*/
+        }
     }
     
     return RedisModule_ReplyWithLongLong(ctx, 1);
@@ -350,7 +337,10 @@ int RedisModule_OnLoad (RedisModuleCtx *ctx)
         return REDISMODULE_ERR;
     }
     
-    RedisModule_Log(ctx, "warning", "!!!!!!!!!!  Shared memory module is very, very dangerous!  !!!!!!!!!!");
+    RedisModule_Log(ctx, "warning", "!!!!!!!!!!  Shared memory module can get dangerous!  !!!!!!!!!!");
+    
+    connections = listCreate();
+    mtx_init(&accessing_connections, mtx_plain);
     
     ModuleSHM_BeforeSelect = ModuleSHM_BeforeSelect_Impl;
     ModuleSHM_AfterSelect = ModuleSHM_AfterSelect_Impl;
@@ -363,16 +353,6 @@ int RedisModule_OnLoad (RedisModuleCtx *ctx)
                                   flags, 1, 1, 1) == REDISMODULE_ERR) {
         return REDISMODULE_ERR;
     }
-    
-    /* We will keep a list of threads, each listening to changes in the shared
-     * memory, */
-    main_thread = pthread_self();
-    threads = listCreate();
-    /* and whenever there are changes, we create a signal to force the main thread
-     * to process them by issuing SIGUSR2 to stop 'select'. */
-    signal(SIGUSR2, SIG_IGN);
-    
-//    X("hello\n");
     
     return 0;
 }
