@@ -318,6 +318,8 @@ static int Command_Open(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
     
     close(fd); /*TODO: error handling */
     
+    printf("%lld creating shm connection \n", ustime());
+    
     /* Create a client for replaying the input to */
     client *c = createClient(-1);
     c->flags |= CLIENT_MODULE;
