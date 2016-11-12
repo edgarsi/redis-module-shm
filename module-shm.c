@@ -58,6 +58,7 @@ static pthread_t thread;
  * is sleeping, and only let the main Redis thread process process requests
  * when the shared memory thread is waiting. */ 
 static mtx_t processing_requests;
+static shmConnCtx *conn_ctx_processing = NULL;
 
 
 extern void (*ModuleSHM_BeforeSelect)();
@@ -74,140 +75,38 @@ void ModuleSHM_AfterSelect_Impl()
     mtx_lock(&processing_requests);
 }
 
-/* Read the input from shared memory into redis client input buffer. 
- * Returns the number of bytes moved. */
-/* Most of the code is just lifted from redis networking.c */
-static size_t ReadInput(shmConnCtx *conn_ctx)
+extern ssize_t (*ModuleSHM_ReadUnusual)(int fd, void *buf, size_t count);
+ssize_t ModuleSHM_ReadUnusual_Impl(int fd, void *buf, size_t count)
 {
-    size_t btr = CharFifo_UsedSpace(&conn_ctx->mem->to_server);
+    errno = 0;
+    size_t btr = CharFifo_UsedSpace(&conn_ctx_processing->mem->to_server);
     if (btr == 0) {
-        return 0;
+        errno = EAGAIN;
+        return -1;
     }
-    X("%lld reading \n", ustime());
-    if (btr > 1024) {
-        btr = 1024;
-    }
-    char tmp[1024]; /*TODO: Read directly into sds */
-    CharFifo_Read(&conn_ctx->mem->to_server, tmp, btr);
-    tmp[btr] = '\0';
-//            RedisModule_Log(thread_ctx->redis_ctx, "warning", "%s", tmp);
-    X("%s", tmp);
-    
-    //TODO: Other stuff from readQueryFromClient, I'm blatantly ignoring here.
-    //TODO: Split readQueryFromClient in parts, to avoid duplication.
-    client *c = conn_ctx->client;
-    int readlen = btr;
-    size_t qblen = sdslen(c->querybuf);
-    if (c->querybuf_peak < qblen) c->querybuf_peak = qblen;
-    c->querybuf = sdsMakeRoomFor(c->querybuf, readlen);
-    memcpy(c->querybuf+qblen, tmp, btr);
-    int nread = btr;
-
-    sdsIncrLen(c->querybuf,nread);
-    c->lastinteraction = server.unixtime;
-    if (c->flags & CLIENT_MASTER) c->reploff += nread;
-    server.stat_net_input_bytes += nread;
-    
+    CharFifo_Read(&conn_ctx_processing->mem->to_server, buf, btr);
     return btr;
 }
 
-/* Write the output redis client output buffer to shared memory. */
-/* Most of the code is just lifted from redis networking.c */
-static void WriteOutput(shmConnCtx *conn_ctx)
+extern ssize_t (*ModuleSHM_WriteUnusual)(int fd, const void *buf, size_t count);
+ssize_t ModuleSHM_WriteUnusual_Impl(int fd, const void *buf, size_t count)
 {
-    ssize_t nwritten = 0, totwritten = 0;
-    size_t objlen;
-    sds o;
-    
-    sharedMemoryBuffer *target = &conn_ctx->mem->to_client;
-    client *c = conn_ctx->client;
-
-    while(clientHasPendingReplies(c)) {
-        if (c->bufpos > 0) {
-            
-            
-            /* TODO: Clean this mess up */
-            
-            
-            X("%lld writing type1\n", ustime());
-            X("%.*s", (int)objlen - c->sentlen, o + c->sentlen);
-            size_t free = 0;
-            do {
-                free = CharFifo_FreeSpace(target);
-            } while (free == 0); /* Should this always be blocking? */
-            if (free == 0) break;
-            if (free >= c->bufpos - c->sentlen) {
-                nwritten = c->bufpos - c->sentlen;
-            } else {
-                nwritten = free;
-            }
-            CharFifo_Write(target, c->buf + c->sentlen, nwritten);
-            if (nwritten <= 0) break;
-            c->sentlen += nwritten;
-            totwritten += nwritten;
-
-            /* If the buffer was sent, set bufpos to zero to continue with
-             * the remainder of the reply. */
-            if ((int)c->sentlen == c->bufpos) {
-                c->bufpos = 0;
-                c->sentlen = 0;
-            }
-        } else {
-            X("%lld writing type2\n", ustime());
-            o = listNodeValue(listFirst(c->reply));
-            objlen = sdslen(o);
-
-            if (objlen == 0) {
-                listDelNode(c->reply,listFirst(c->reply));
-                continue;
-            }
-
-            X("%.*s", (int)objlen - c->sentlen, o + c->sentlen);
-            
-            size_t free = 0;
-            do {
-                free = CharFifo_FreeSpace(target);
-            } while (free == 0);
-            if (free == 0) break; /* TODO: Write all, not just a bit. See shm.c; (and analogically where needed) */
-            if (free >= objlen - c->sentlen) {
-                nwritten = objlen - c->sentlen;
-            } else {
-                nwritten = free;
-            }
-            CharFifo_Write(target, o + c->sentlen, nwritten);
-//            nwritten = objlen - c->sentlen;
-            if (nwritten <= 0) break;
-            c->sentlen += nwritten;
-            totwritten += nwritten;
-
-            /* If we fully sent the object on head go to the next one */
-            if (c->sentlen == objlen) {
-                listDelNode(c->reply,listFirst(c->reply));
-                c->sentlen = 0;
-                c->reply_bytes -= objlen;
-            }
-        }
+    errno = 0;
+    X("%lld writing\n", ustime());
+//    X("%.*s", count, buf);
+    size_t free = 0;
+    do {
+        free = CharFifo_FreeSpace(&conn_ctx_processing->mem->to_client);
+    } while (free == 0); /* Should this always be blocking? */
+    ssize_t nwritten;
+    if (free >= count) {
+        nwritten = count;
+    } else {
+        nwritten = free;
     }
-    if (totwritten > 0) {
-        /* For clients representing masters we don't count sending data
-         * as an interaction, since we always send REPLCONF ACK commands
-         * that take some time to just fill the socket output buffer.
-         * We just rely on data / pings received for timeout detection. */
-        if (!(c->flags & CLIENT_MASTER)) c->lastinteraction = server.unixtime; /*TODO: Think about this */
-    }
-    if (!clientHasPendingReplies(c)) {
-        c->sentlen = 0;
-
-        /* Close connection after entire reply has been sent. */
-//        if (c->flags & CLIENT_CLOSE_AFTER_REPLY) {
-//            freeClient(c);
-//            return C_ERR;
-//        }
-        //^ WHAT? A client is created for each command?
-    }
-    X("%lld replied bytes=%d\n", ustime(), totwritten);
+    CharFifo_Write(&conn_ctx_processing->mem->to_client, buf, nwritten);
+    return nwritten;
 }
-
 
 /* Spinning because avoids slow context switching. */
 static inline void mtx_lock_spinning(mtx_t *m)
@@ -240,12 +139,12 @@ static void* RunThread(void* dummy __attribute__((unused)))
         while (it != NULL) {
             shmConnCtx *conn_ctx = listNodeValue(it);
             
-            /* ...and process them. */
-            if (ReadInput(conn_ctx)) {
-                X("%lld processing \n", ustime());
-                processInputBuffer(conn_ctx->client);
-                WriteOutput(conn_ctx);
-                X("%lld fin processing client connection \n", ustime());
+            if (CharFifo_UsedSpace(&conn_ctx->mem->to_server) != 0) {
+                /* ...and process it. */
+                conn_ctx_processing = conn_ctx;
+                readQueryFromClient(server.el, -1, conn_ctx->client, AE_READABLE);
+                sendReplyToClient(server.el, -1, conn_ctx->client, AE_WRITABLE);
+                conn_ctx_processing = NULL;
             }
             
             listNode *next_it = listNextNode(it);
@@ -318,7 +217,7 @@ static int Command_Open(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
     
     close(fd); /*TODO: error handling */
     
-    printf("%lld creating shm connection \n", ustime());
+    X("%lld creating shm connection \n", ustime());
     
     /* Create a client for replaying the input to */
     client *c = createClient(-1);
@@ -334,7 +233,7 @@ static int Command_Open(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
     listAddNodeHead(connections, conn_ctx); /*TODO: err*/
     
     if (listLength(connections) == 1) {
-        printf("%lld creating thread \n", ustime());
+        X("%lld creating thread \n", ustime());
         int err = pthread_create(&thread, NULL, RunThread, NULL);
         if (err != 0) {
             mtx_unlock(&accessing_connections);
@@ -362,6 +261,8 @@ int RedisModule_OnLoad (RedisModuleCtx *ctx)
     
     ModuleSHM_BeforeSelect = ModuleSHM_BeforeSelect_Impl;
     ModuleSHM_AfterSelect = ModuleSHM_AfterSelect_Impl;
+    ModuleSHM_ReadUnusual = ModuleSHM_ReadUnusual_Impl;
+    ModuleSHM_WriteUnusual = ModuleSHM_WriteUnusual_Impl;
     mtx_init(&processing_requests, mtx_plain);
     mtx_lock(&processing_requests);
     

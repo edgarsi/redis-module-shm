@@ -34,6 +34,8 @@
 
 void (*ModuleSHM_BeforeSelect)();
 void (*ModuleSHM_AfterSelect)();
+ssize_t (*ModuleSHM_ReadUnusual)(int fd, void *buf, size_t count);
+ssize_t (*ModuleSHM_WriteUnusual)(int fd, const void *buf, size_t count);
 
 #ifdef HAVE_EVPORT
 int port_getn(int port, port_event_t list[], uint_t max,
@@ -106,3 +108,30 @@ int select(int nfds, fd_set *readfds, fd_set *writefds,
     return res;
 }
 
+ssize_t read(int fd, void *buf, size_t count)
+{
+    static int (*real_read)(int fd, void *buf, size_t count) = NULL;
+    if (real_read == NULL) {
+        real_read = dlsym(RTLD_NEXT, "read");
+    }
+    
+    if (fd == -1) {
+        return ModuleSHM_ReadUnusual(fd, buf, count);
+    } else {
+        return real_read(fd, buf, count);
+    }
+}
+
+ssize_t write(int fd, const void *buf, size_t count)
+{
+    static int (*real_write)(int fd, const void *buf, size_t count) = NULL;
+    if (real_write == NULL) {
+        real_write = dlsym(RTLD_NEXT, "write");
+    }
+    
+    if (fd == -1) {
+        return ModuleSHM_WriteUnusual(fd, buf, count);
+    } else {
+        return real_write(fd, buf, count);
+    }
+}
