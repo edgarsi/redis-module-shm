@@ -12,42 +12,95 @@
  * is to avoid such weirdities.
  */
 
+#include "config.h"
+
 #include <dlfcn.h>
-#include <stdio.h>
-#include <sys/select.h>
+#include <stddef.h>
+
+#ifdef HAVE_EVPORT
+#include <port.h>
+#endif
+
+#ifdef HAVE_EPOLL
 #include <sys/epoll.h>
+#endif
+
+#ifdef HAVE_KQUEUE
+#include <sys/event.h>
+#endif
+
+#include <sys/select.h>
 
 
 void (*ModuleSHM_BeforeSelect)();
 void (*ModuleSHM_AfterSelect)();
 
-int select(int nfds, fd_set *readfds, fd_set *writefds,
-        fd_set *exceptfds, struct timeval *timeout)
+#ifdef HAVE_EVPORT
+int port_getn(int port, port_event_t list[], uint_t max,
+     uint_t *nget, const timespec_t *timeout)
 {
-    static int (*real_select)(int nfds, fd_set *readfds, fd_set *writefds,
-            fd_set *exceptfds, struct timeval *timeout) = NULL;
-    if (real_select == NULL) {
-        real_select = dlsym(RTLD_NEXT, "select");
+    static int (*real_port_getn)(int epfd, struct epoll_event *events,
+                                 int maxevents, int timeout) = NULL;
+    if (real_port_getn == NULL) {
+        real_port_getn = dlsym(RTLD_NEXT, "port_getn");
     }
     
     ModuleSHM_BeforeSelect();
-    int res = real_select(nfds, readfds, writefds, exceptfds, timeout);
+    int res = real_port_getn(port, list, max, nget, timeout);
     ModuleSHM_AfterSelect();
     
     return res;
 }
+#endif
 
+#ifdef HAVE_EPOLL
 int epoll_wait(int epfd, struct epoll_event *events,
-                      int maxevents, int timeout)
+               int maxevents, int timeout)
 {
     static int (*real_epoll_wait)(int epfd, struct epoll_event *events,
-            int maxevents, int timeout) = NULL;
+                                  int maxevents, int timeout) = NULL;
     if (real_epoll_wait == NULL) {
         real_epoll_wait = dlsym(RTLD_NEXT, "epoll_wait");
     }
     
     ModuleSHM_BeforeSelect();
     int res = real_epoll_wait(epfd, events, maxevents, timeout);
+    ModuleSHM_AfterSelect();
+    
+    return res;
+}
+#endif
+
+#ifdef HAVE_KQUEUE
+int kevent(int kq, const struct kevent *changelist, int nchanges, 
+           struct kevent *eventlist, int nevents, const struct timespec *timeout)
+{
+    static int (*real_kevent)(int kq, const struct kevent *changelist, 
+                              int nchanges, struct kevent *eventlist, int nevents, 
+                              const struct timespec *timeout) = NULL;
+    if (real_kevent == NULL) {
+        real_kevent = dlsym(RTLD_NEXT, "kevent");
+    }
+    
+    ModuleSHM_BeforeSelect();
+    int res = real_kevent(kq, changelist, nchanges, eventlist, nevents, timeout);
+    ModuleSHM_AfterSelect();
+    
+    return res;
+}
+#endif
+
+int select(int nfds, fd_set *readfds, fd_set *writefds,
+           fd_set *exceptfds, struct timeval *timeout)
+{
+    static int (*real_select)(int nfds, fd_set *readfds, fd_set *writefds,
+                              fd_set *exceptfds, struct timeval *timeout) = NULL;
+    if (real_select == NULL) {
+        real_select = dlsym(RTLD_NEXT, "select");
+    }
+    
+    ModuleSHM_BeforeSelect();
+    int res = real_select(nfds, readfds, writefds, exceptfds, timeout);
     ModuleSHM_AfterSelect();
     
     return res;
