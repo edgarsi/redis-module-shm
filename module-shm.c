@@ -18,14 +18,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
-
-
-/* Choose?: pthread.h vs threads.h
- * threads.h has nicer API but GCC hasn't yet implemented it. */ 
-#include <pthread.h>
-#include <c11threads.h>
-
-
+#include "c11threads.h"
 #include "lockless-char-fifo/charfifo.h"
 
 
@@ -52,7 +45,7 @@ typedef struct shmConnCtx {
 static list *connections;
 static mtx_t accessing_connections;
 
-static pthread_t thread;
+static thrd_t thread;
 
 /* Only let shared memory thread process requests while the main Redis thread
  * is sleeping, and only let the main Redis thread process process requests
@@ -234,8 +227,7 @@ static int Command_Open(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
     
     if (listLength(connections) == 1) {
         X("%lld creating thread \n", ustime());
-        int err = pthread_create(&thread, NULL, RunThread, NULL);
-        if (err != 0) {
+        if (thrd_create(&thread, RunThread, NULL) != thrd_success) {
             mtx_unlock(&accessing_connections);
             return RedisModule_ReplyWithError(ctx, "Can't create a thread to listen "
                                                    "to the changes in shared memory."); /*TODO: err*/
