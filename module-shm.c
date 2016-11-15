@@ -87,12 +87,7 @@ extern ssize_t (*ModuleSHM_WriteUnusual)(int fd, const void *buf, size_t count);
 ssize_t ModuleSHM_WriteUnusual_Impl(int fd, const void *buf, size_t count)
 {
     errno = 0;
-    X("%lld writing\n", ustime());
-//    X("%.*s", count, buf);
-    size_t free = 0;
-    do {
-        free = CharFifo_FreeSpace(&conn_ctx_processing->mem->to_client);
-    } while (free == 0); /* Should this always be blocking? */
+    size_t free = CharFifo_FreeSpace(&conn_ctx_processing->mem->to_client);
     ssize_t nwritten;
     if (free >= count) {
         nwritten = count;
@@ -120,11 +115,9 @@ static inline int module_client_fd(RedisModuleCtx *module)
     return ((RedisModuleCtx*)module)->client->fd;
 }
 
-/*TODO: Search "pthread_" to see how redis handles threading, restrictions and such. */
 /*TODO: Try this: http://lxr.free-electrons.com/source/include/linux/hw_breakpoint.h */
 static int RunThread(void* dummy __attribute__((unused)))
 {
-    /*TODO: Test replication */
     for (;;) {
         mtx_lock_spinning(&processing_requests);
         mtx_lock_spinning(&accessing_connections);
@@ -138,6 +131,10 @@ static int RunThread(void* dummy __attribute__((unused)))
                 /* ...and process it. */
                 conn_ctx_processing = conn_ctx;
                 readQueryFromClient(server.el, -1, conn_ctx->client, AE_READABLE);
+                conn_ctx_processing = NULL;
+            }
+            if (clientHasPendingReplies(conn_ctx->client)) {
+                conn_ctx_processing = conn_ctx;
                 sendReplyToClient(server.el, -1, conn_ctx->client, AE_WRITABLE);
                 conn_ctx_processing = NULL;
             }
@@ -150,14 +147,14 @@ static int RunThread(void* dummy __attribute__((unused)))
             int retval = getsockopt(conn_ctx->fd, SOL_SOCKET, SO_ERROR, &error, &len);
             if (retval != 0 || error != 0) {
                 X("%lld closing socket fd=%d retval=%d error=%d\n", ustime(), conn_ctx->fd, retval, error);
-                freeClient(conn_ctx->client); /*TODO: err*/
-                RedisModule_Free(conn_ctx); /*TODO: err*/
+                freeClient(conn_ctx->client);
+                munmap((void*)conn_ctx->mem, sizeof(sharedMemory));
+                RedisModule_Free(conn_ctx);
                 listDelNode(connections, it);
             }
             
             it = next_it;
         }
-        
         
         /* No need to waste CPU when no shared memory connection established. */
         if (listLength(connections) == 0) {
@@ -201,16 +198,16 @@ static int Command_Open(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
     int fd = shm_open(shm_name_cpy, O_RDWR, 0);
     if (fd < 0) {
         return RedisModule_ReplyWithError(ctx, "Can't find the shared memory "
-                                               "file on this host"); /*TODO: err*/
+                                               "file on this host");
     }
     sharedMemory *mem = mmap(NULL, sizeof(sharedMemory), (PROT_READ|PROT_WRITE), 
                          MAP_SHARED, fd, 0);
+    close(fd);
     if (mem == MAP_FAILED) {
         return RedisModule_ReplyWithError(ctx, "Found the shared memory file but "
-                                               "unable to mmap it"); /*TODO: err*/
+                                               "unable to mmap it");
     }
     
-    close(fd); /*TODO: error handling */
     
     X("%lld creating shm connection \n", ustime());
     
@@ -225,14 +222,17 @@ static int Command_Open(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
     
     mtx_lock(&accessing_connections);
     
-    listAddNodeHead(connections, conn_ctx); /*TODO: err*/
+    listAddNodeHead(connections, conn_ctx);
     
     if (listLength(connections) == 1) {
         X("%lld creating thread \n", ustime());
+        
         if (thrd_create(&thread, RunThread, NULL) != thrd_success) {
+            
             mtx_unlock(&accessing_connections);
+            munmap((void*)mem, sizeof(sharedMemory));
             return RedisModule_ReplyWithError(ctx, "Can't create a thread to listen "
-                                                   "to the changes in shared memory."); /*TODO: err*/
+                                                   "to the changes in shared memory.");
         }
     }
     
@@ -261,7 +261,7 @@ int RedisModule_OnLoad (RedisModuleCtx *ctx)
     mtx_lock(&processing_requests);
     
     /* https://github.com/RedisLabs/RedisModulesSDK/blob/master/FUNCTIONS.md */
-    const char *flags = "readonly random deny-oom no-monitor fast"; /* TODO: allow-loading, and look into the used flags in detail */
+    const char *flags = "readonly deny-oom allow-loading random allow-stale fast";
     if (RedisModule_CreateCommand(ctx, "SHM.OPEN", Command_Open, 
                                   flags, 1, 1, 1) == REDISMODULE_ERR) {
         return REDISMODULE_ERR;
