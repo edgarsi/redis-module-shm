@@ -11,6 +11,8 @@
 /* Redis modules are not supposed to use redis server files,
  * so some macros attempt get redefined. */
 #undef _DEFAULT_SOURCE
+#undef _GNU_SOURCE
+#undef _LARGEFILE_SOURCE
 #include "server.h"
 
 #include <sys/mman.h>
