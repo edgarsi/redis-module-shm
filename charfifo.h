@@ -27,7 +27,7 @@ typedef struct {
 void CharFifo_Init(volatile void *charfifo, size_t size);
 
 size_t CharFifo_FreeSpace(volatile void *charfifo);
-void CharFifo_Write(volatile void *charfifo, char *buf, size_t btw); // does not check free space!
+void CharFifo_Write(volatile void *charfifo, const char *buf, size_t btw); // does not check free space!
 
 size_t CharFifo_UsedSpace(volatile void *charfifo);
 void CharFifo_Read(volatile void *charfifo, char *buf, size_t btr); // does not check used space!

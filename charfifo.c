@@ -110,7 +110,7 @@ static inline void Transfer(volatile char *v_fifo_buf, char *buf, size_t bytes,
     X("%lld Transfer fin (start_idx=%d end_idx=%d bytes=%d direction=%d\n", ustime(), *p_start_idx, end_idx, bytes, direction);
 }
 
-void CharFifo_Write(volatile void *charfifo, char *buf, size_t btw) {
+void CharFifo_Write(volatile void *charfifo, const char *buf, size_t btw) {
     EXTRACT_HEADER(charfifo);
     EXTRACT_FIFO_BUF(charfifo);
     Transfer(fifo_buf, buf, btw, 
