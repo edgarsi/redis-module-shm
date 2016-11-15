@@ -120,7 +120,7 @@ static inline int module_client_fd(RedisModuleCtx *module)
 
 /*TODO: Search "pthread_" to see how redis handles threading, restrictions and such. */
 /*TODO: Try this: http://lxr.free-electrons.com/source/include/linux/hw_breakpoint.h */
-static void* RunThread(void* dummy __attribute__((unused)))
+static int RunThread(void* dummy __attribute__((unused)))
 {
     /*TODO: Test replication */
     for (;;) {
@@ -168,7 +168,7 @@ static void* RunThread(void* dummy __attribute__((unused)))
     mtx_unlock(&accessing_connections);
     mtx_unlock(&processing_requests);
     
-    return NULL;
+    return thrd_success;
 }
 
 /* Does the server end of establishing the shared memory connection. */
