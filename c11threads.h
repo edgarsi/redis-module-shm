@@ -36,7 +36,7 @@ typedef void (*tss_dtor_t)(void*);
 enum {
     mtx_plain       = 0,
     mtx_recursive   = 1,
-    mtx_timed       = 2,
+/*    mtx_timed       = 2,*/
 };
 
 enum {
@@ -120,9 +120,9 @@ static inline int mtx_init(mtx_t *mtx, int type)
 
     pthread_mutexattr_init(&attr);
 
-    if(type & mtx_timed) {
+    /*if(type & mtx_timed) {
         pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_TIMED_NP);
-    }
+    }*/
     if(type & mtx_recursive) {
         pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
     }
@@ -154,7 +154,7 @@ static inline int mtx_trylock(mtx_t *mtx)
     }
     return res == 0 ? thrd_success : thrd_error;
 }
-
+/*
 static inline int mtx_timedlock(mtx_t *mtx, const struct timespec *ts)
 {
     int res;
@@ -164,7 +164,7 @@ static inline int mtx_timedlock(mtx_t *mtx, const struct timespec *ts)
     }
     return res == 0 ? thrd_success : thrd_error;
 }
-
+*/
 static inline int mtx_unlock(mtx_t *mtx)
 {
     return pthread_mutex_unlock(mtx) == 0 ? thrd_success : thrd_error;
