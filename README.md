@@ -22,6 +22,14 @@ Server side: `redis-server --loadmodule module-shm.so`
 Client side: It's all the same [hiredis](https://github.com/redis/hiredis) you're used to using. Latency has its tradeoffs - to achieve maximum latency, a single thread is working at 100% load, actively reading for changes in memory. So, you must first understand this (see more at [#Performance](#performance) section below), and confirm latency is important for you, by calling: `asdfasdf`
 TODO
 
+### Do I need a low latency?
+
+Yeah! Well, could be, will be, likely so...
+
+Synchronous communication makes for some cool guarantees. A synchronous messaging system can guarantee that a software crash may only lose the last packet attempted to be sent, *never* more. 13ms latency means you can get ~75000 syncronous commands per second through to Redis. Evaluate your requirements, and look at those numbers add up! :D
+
+Say, you've already written a system which uses synchronous communication with Redis, but now some requirements have changed, a large client appeared or whatever, and you're running out of CPU. It could be as bad as large parts of the system may need rewriting. A proper system rewrite may take a few days, but you're out of CPU now. Just plug in that `module-shm.so` and you may not have to work on weekends on coffee power, and you may finish that rewrite properly.
+
 ### How does it work?
 
 This code all relies on Linux, GCC and x86. I'm not even trying to investigate other platforms or compilers, as each is like a unicorn in this field - amazingly unique, complex, sometimes entwined in mysterious behaviours. Linux & GCC & x86 is the most popular combo.
