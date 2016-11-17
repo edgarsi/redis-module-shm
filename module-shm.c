@@ -29,7 +29,9 @@
 
 
 
-#define SHARED_MEMORY_BUF_SIZE 1000
+/* redisBufferRead thinks 16k is best for a temporary buffer reading replies.
+ * A good guess is this will do well with shared memory buffer size too. */
+#define SHARED_MEMORY_BUF_SIZE (1024*16)
 
 typedef CHARFIFO(SHARED_MEMORY_BUF_SIZE) sharedMemoryBuffer;
 
