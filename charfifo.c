@@ -113,7 +113,7 @@ static inline void Transfer(volatile char *v_fifo_buf, char *buf, size_t bytes,
 void CharFifo_Write(volatile void *charfifo, const char *buf, size_t btw) {
     EXTRACT_HEADER(charfifo);
     EXTRACT_FIFO_BUF(charfifo);
-    Transfer(fifo_buf, buf, btw, 
+    Transfer(fifo_buf, (char*)buf, btw, 
             &header->write_idx, 
             aget(&header->read_idx), 
             header->size, 
