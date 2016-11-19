@@ -250,8 +250,6 @@ int RedisModule_OnLoad (RedisModuleCtx *ctx)
         return REDISMODULE_ERR;
     }
     
-    RedisModule_Log(ctx, "warning", "!!!!!!!!!!  Shared memory module can get dangerous!  !!!!!!!!!!");
-    
     connections = listCreate();
     mtx_init(&accessing_connections, mtx_plain);
     
