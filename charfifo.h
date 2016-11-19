@@ -20,7 +20,7 @@ typedef struct {
 // Example: typedef CHARFIFO(2000) t_my_buffer;
 #define CHARFIFO(size)                                                         \
     volatile struct { /* volatile needed iff shared memory used */             \
-        charfifo_header_t header;                                       \
+        charfifo_header_t header;                                              \
         char buf[size + 1];                                                    \
     } __attribute__((aligned(8))) /* aligned for atomic instructions */
 
