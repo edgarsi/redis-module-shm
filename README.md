@@ -31,7 +31,7 @@ This creates `libhiredis.so`. It contains the normal Hiredis functionality plus 
 
 Server side: `LD_PRELOAD=module-shm-preload.so redis-server --loadmodule module-shm.so`
 
-In production, I really recommend running a higher priority than default (see [#Performance](#performance)):
+In production, I really recommend running a higher priority than default (see [#Performance](#performance)):  
 `sudo nice -n -15 sudo -u myredisuser LD_PRELOAD=module-shm-preload.so redis-server --loadmodule module-shm.so`
 
 Client side: It's all the same as the Hiredis you're used to using, with a few extra functions. See: [API and examples](https://github.com/edgarsi/hiredis-shm/blob/shared-memory/shm-api.md).
@@ -54,7 +54,7 @@ This code all relies on Linux, GCC and x86. I'm not even trying to investigate o
 
 Whenever a TCP or socket `read()`/`write()` would be called, a pop/push on the circular buffer is done instead.
 
-A single dedicated thread on redis-server is actively reading the shared memory, waiting for input, or waiting for the buffer to free up for output. It never sleeps, and uses 100% of the CPU core, whenever at least one client is connected. Similarily, the Redis client uses 100% of its CPU core during any Redis API call. It's a chosen tradeof to avoid communicating through kernel, thus keeping latency extremely low. There is a gotcha though. When CPU load is high, the CPU scheduler gives bursts of CPU time, causing high latency during downtimes. As load gets higher, the duration and time between (=latency) the bursts gets higher. To avoid this latency, redis-server and client should be run with higher priority than other processes. Note that the same problem does not affect TCP or unix socket communication [iff](https://en.wikipedia.org/wiki/If_and_only_if) Redis requests are made with relatively large gaps between them. When a request occurs, the "waiting for sockets" Redis server (and client, if it was also sleeping) is woken up almost immediately because it hasn't used up any recent CPU time yet. I may implement configurable alternatives later...
+A single dedicated thread on redis-server is actively reading the shared memory, waiting for input, or waiting for the buffer to free up for output. It never sleeps, and uses 100% of the CPU core, whenever at least one client is connected. Similarily, the Redis client uses 100% of its CPU core during any Redis API call. It's a chosen tradeof to avoid communicating through kernel, thus keeping latency extremely low. There is a gotcha though. When CPU load is high, the CPU scheduler gives bursts of CPU time, causing high latency during busy times. As load gets higher, the duration and time between (=latency) the bursts gets higher. To avoid this latency, redis-server and client should be run with higher priority than other processes. Note that the same problem does not affect TCP or unix socket communication [iff](https://en.wikipedia.org/wiki/If_and_only_if) Redis requests are made with relatively large gaps between them. When a request occurs, the "waiting for sockets" Redis server (and client, if it was also sleeping) is woken up almost immediately because it hasn't used up any recent CPU time yet. I may implement configurable alternatives later...
 
 Now, the nasty part. Redis modules aren't expected to change how connections work, or to create new custom connections. There is no API exposing that functionality. Instead, I call undocumented functions, and overwrite functions such as `read()` and `write()` with versions able to deal with shared memory connections. This overwriting is why the `LD_PRELOAD=module-shm-preload.so` part is needed. The alternative would be copy-pasting Redis server code and hijacking the main thread - ugly and unmaintainable. Overwriting libc functions is like a crossing a border out of North Korea - you're not supposed to, but the alternative is horrid.
 
@@ -83,7 +83,7 @@ min: 0, max: 106, avg: 0.170 (1041387 samples)^C
 
 </pre>
 
-This fork of Redis has a redis-cli which supports shared memory communication. It also outputs millisecond latencies with 3 digits after comma, and has a new option `--latency-sample-rate`. Try `--latency-sample-rate 0` to see what happens when the communication channel is loaded at full capacity. I get three times lower latencies for sockets and for shared memory alike. 
+[This fork](https://github.com/edgarsi/redis-shm) of Redis has a redis-cli which supports shared memory communication. It also outputs millisecond latencies with 3 digits after comma, and has a new option `--latency-sample-rate`. Try `--latency-sample-rate 0` to see what happens when the communication channel is loaded at full capacity. I get three times lower latencies for sockets and for shared memory alike. 
 
 If you compile this module, please make some tests and send in your results (as a new issue or email), for a little less bias.
 How to compile and use:
