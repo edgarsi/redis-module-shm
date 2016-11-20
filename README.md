@@ -70,15 +70,15 @@ This is how the benchmark for the barchart is done (using [redis-shm](https://gi
 <pre>
 
 sudo nice -n -15 sudo -u edg ~/tmp/redis/src/redis-server --loadmodule ~/tmp/redis-module-shm/module-shm.so
-03:08:54 edg@host ~/tmp/redis $ sudo taskset 0x01 nice -n -15 sudo -u edg ~/tmp/redis/src/redis-cli --latency
+03:08:54 edg@host ~/tmp/redis $ sudo nice -n -15 sudo -u edg ~/tmp/redis/src/redis-cli --latency
 min: 0, max: 94, avg: 0.013 (878912 samples)^C
 
 sudo nice -n -15 sudo -u edg ~/tmp/redis/src/redis-server
-05:37:58 edg@host ~/tmp/redis $ sudo taskset 0x01 nice -n -15 sudo -u edg ~/tmp/redis/src/redis-cli --latency
+05:37:58 edg@host ~/tmp/redis $ sudo nice -n -15 sudo -u edg ~/tmp/redis/src/redis-cli --latency
 min: 0, max: 70, avg: 0.226 (853519 samples)^C
 
 sudo nice -n -15 sudo -u edg ~/tmp/redis/src/redis-server redis.conf # <- enabled unixsocket in conf
-10:02:25 edg@host ~/tmp/redis $ sudo taskset 0x01 nice -n -15 sudo -u edg ~/tmp/redis/src/redis-cli -s redis.sock --latency
+10:02:25 edg@host ~/tmp/redis $ sudo nice -n -15 sudo -u edg ~/tmp/redis/src/redis-cli -s redis.sock --latency
 min: 0, max: 106, avg: 0.170 (1041387 samples)^C
 
 </pre>
