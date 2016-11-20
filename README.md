@@ -93,6 +93,7 @@ cd redis-shm
 make
 ./src/redis-cli --latency-history
 ```
+Or better: `sudo nice -n -15 sudo -u myredisuser ./src/redis-cli --latency-history`
 
 (Note that redis-benchmark won't use shared memory. It implements its own low level communication with the Redis server, bypassing the Hiredis code with shared memory support. But redis-cli doesn't do magic, so can be used for testing latency.)
 
