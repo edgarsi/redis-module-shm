@@ -1,3 +1,6 @@
+## Update:
+Probably doesn't work any more, unless you want to involve time yourself to fix code to match changes in Redis, such as variable renames etc.
+
 # Shared memory support for Redis
 
 ![Average latency: TCP=0.226ms Unix_socket=0.170ms Shared_memory=0.013ms](docs/latency_barchart.png)
